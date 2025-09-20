@@ -9,28 +9,31 @@ public class ClawSimpleController : MonoBehaviour
     public bool clampInsideBounds = true;
 
     [Header("Hook")]
-    public Transform hook;                 // Hook transform (child of Head)
-    public Rigidbody hookRb;               // Hook rigidbody (KINEMATIC)
-    public ClawGrabberSimple grabber;      // Hook grabber
-    public float dropDistance = 3.0f;      // meters down from home localY
-    public float descendSpeed = 3.5f;      // m/s
-    public float ascendSpeed = 4.5f;       // m/s
+    public Transform hook;                 // kinematic hook
+    public Rigidbody hookRb;               // kinematic rigidbody
+    public ClawGrabberSimple grabber;      // controls joint + open/close
+    public ClawVisual clawVisual;          // finger animation
+
+    [Header("Drop Motion")]
+    public float dropDistance = 3.0f;
+    public float descendSpeed = 3.5f;
+    public float ascendSpeed = 4.5f;
     public float settlePause = 0.10f;
 
     [Header("Controls")]
     public KeyCode dropKey = KeyCode.Space;
+    public KeyCode openKeyPrimary = KeyCode.Z;
+    public KeyCode openKeyAlt = KeyCode.Return; // Enter
 
-    float _hookHomeY;          // hook local Y at rest
-    bool _busy;                // true during the whole drop→close→retract
-    const float EPS = 0.0005f; // tiny epsilon for float compares
+    float _hookHomeY;
+    bool _busy;
+    const float EPS = 0.0005f;
 
     bool HookAtHome => Mathf.Abs(hook.localPosition.y - _hookHomeY) <= EPS;
 
     void Awake()
     {
-        if (!hook) Debug.LogError("Hook not set on ClawSimpleController.");
         _hookHomeY = hook.localPosition.y;
-
         if (hookRb)
         {
             hookRb.useGravity = false;
@@ -38,19 +41,29 @@ public class ClawSimpleController : MonoBehaviour
             hookRb.interpolation = RigidbodyInterpolation.Interpolate;
             hookRb.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
         }
+        // ensure we start OPEN
+        grabber.SetOpen(true);
+        if (clawVisual) clawVisual.SetOpen(false);
     }
 
     void Update()
     {
-        // Lock movement whenever the hook isn't home or we're mid-sequence
+        // Manual OPEN (reset): allowed whenever not mid-sequence
+        if (!_busy && (Input.GetKeyDown(openKeyPrimary) || Input.GetKeyDown(openKeyAlt)))
+        {
+            grabber.SetOpen(true);                 // opens + releases if holding
+            if (clawVisual) clawVisual.SetOpen(false);
+        }
+
         bool lockMovement = _busy || !HookAtHome;
 
         if (!lockMovement)
             HandleMove();
         else
-            KeepHookUnderHeadXZ(); // still keep XZ aligned even when locked
+            KeepHookUnderHeadXZ();
 
-        if (Input.GetKeyDown(dropKey) && !lockMovement)
+        // Start drop only if: not busy, hook is home, and claw is OPEN (armed)
+        if (Input.GetKeyDown(dropKey) && !_busy && HookAtHome && grabber.IsOpen)
             StartCoroutine(DropRoutine());
     }
 
@@ -75,7 +88,6 @@ public class ClawSimpleController : MonoBehaviour
 
     void KeepHookUnderHeadXZ()
     {
-        // Keep hook under the head horizontally; do not change its local Y
         Vector3 hp = hook.position;
         hp.x = transform.position.x;
         hp.z = transform.position.z;
@@ -86,26 +98,27 @@ public class ClawSimpleController : MonoBehaviour
     {
         _busy = true;
 
-        // Ensure open and not holding anything
+        // FORCE OPEN for the whole descent
         grabber.SetOpen(true);
+        if (clawVisual) clawVisual.SetOpen(false);
 
-        // DESCEND
+        // DESCEND (open)
         float targetY = _hookHomeY - dropDistance;
         while (hook.localPosition.y > targetY + EPS)
         {
             float y = hook.localPosition.y - descendSpeed * Time.deltaTime;
             hook.localPosition = new Vector3(hook.localPosition.x, Mathf.Max(y, targetY), hook.localPosition.z);
-            KeepHookUnderHeadXZ(); // maintain XZ under head
+            KeepHookUnderHeadXZ();
             yield return null;
         }
 
+        // settle, then CLOSE at bottom and try to grab
         if (settlePause > 0f) yield return new WaitForSeconds(settlePause);
-
-        // CLOSE & try to grab
-        grabber.SetOpen(false);
+        grabber.SetOpen(false);                   // now CLOSED
+        if (clawVisual) clawVisual.SetOpen(true);
         grabber.TryAttachClosest();
 
-        // ASCEND
+        // ASCEND (stay CLOSED)
         while (hook.localPosition.y < _hookHomeY - EPS)
         {
             float y = hook.localPosition.y + ascendSpeed * Time.deltaTime;
@@ -114,7 +127,7 @@ public class ClawSimpleController : MonoBehaviour
             yield return null;
         }
 
-        // Snap exactly home
+        // Snap home — STILL CLOSED. Player must press Z/Enter to reset/open.
         hook.localPosition = new Vector3(hook.localPosition.x, _hookHomeY, hook.localPosition.z);
 
         _busy = false;

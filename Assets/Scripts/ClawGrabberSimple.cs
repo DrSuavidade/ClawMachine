@@ -10,15 +10,19 @@ public class ClawGrabberSimple : MonoBehaviour
 
     [Header("Grip")]
     public float maxCarryMass = 5f;
-    public float breakForce = 1500f;
-    public float breakTorque = 800f;
 
-    FixedJoint _joint;
-    Rigidbody _held;
+    Rigidbody _hookRb;          // our own RB (kinematic)
+    Rigidbody _heldRb;          // prize rigidbody we’re carrying
+    Transform _heldTf;
     bool _open = true;
 
     public bool IsOpen => _open;
-    public bool IsHolding => _held != null;
+    public bool IsHolding => _heldRb != null;
+
+    void Awake()
+    {
+        _hookRb = GetComponent<Rigidbody>();
+    }
 
     public void SetOpen(bool open)
     {
@@ -30,31 +34,44 @@ public class ClawGrabberSimple : MonoBehaviour
     {
         if (_open || IsHolding) return;
 
+        // Find nearest eligible prize
         Collider[] hits = Physics.OverlapSphere(transform.position, grabRadius, prizeMask);
         if (hits == null || hits.Length == 0) return;
 
-        Collider best = hits.OrderBy(c => (c.ClosestPoint(transform.position) - transform.position).sqrMagnitude).First();
-        Rigidbody rb = best.attachedRigidbody;
-        if (!rb || rb.mass > maxCarryMass) return;
+        Collider best = hits
+            .OrderBy(c => (c.ClosestPoint(transform.position) - transform.position).sqrMagnitude)
+            .First();
 
-        _joint = gameObject.AddComponent<FixedJoint>();
-        _joint.connectedBody = rb;
-        _joint.breakForce = breakForce;
-        _joint.breakTorque = breakTorque;
-        _held = rb;
+        Rigidbody rb = best.attachedRigidbody;
+        if (!rb) return;
+        if (rb == _hookRb) return;              // safety: don’t “grab” ourselves
+        if (rb.mass > maxCarryMass) return;
+
+        // Parent carry: make prize ride with the hook
+        _heldRb = rb;
+        _heldTf = rb.transform;
+
+        // Freeze physics so it follows smoothly
+        _heldRb.linearVelocity = Vector3.zero;
+        _heldRb.angularVelocity = Vector3.zero;
+        _heldRb.useGravity = false;
+        _heldRb.isKinematic = true;
+
+        // Keep world position/rotation when parenting
+        _heldTf.SetParent(transform, true);
     }
 
     public void Release()
     {
-        if (_joint) Destroy(_joint);
-        _joint = null;
-        _held = null;
-    }
+        if (!IsHolding) return;
 
-    void OnJointBreak(float force)
-    {
-        _joint = null;
-        _held = null;
+        // Unparent and restore physics
+        _heldTf.SetParent(null, true);
+        _heldRb.isKinematic = false;
+        _heldRb.useGravity = true;
+
+        _heldRb = null;
+        _heldTf = null;
     }
 
     void OnDrawGizmosSelected()
